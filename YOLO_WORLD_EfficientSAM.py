@@ -15,7 +15,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # MASK_ANNOTATOR = sv.MaskAnnotator()
 # LABEL_ANNOTATOR = sv.LabelAnnotator()
 
-folder_paths.folder_names_and_paths["yolo_world"] = ([os.path.join(folder_paths.models_dir, "ultralytics", "yolo_world")], folder_paths.supported_pt_extensions)
+folder_paths.folder_names_and_paths["yolo_world"] = ([os.path.join(folder_paths.models_dir, "ultralytics", "world")], folder_paths.supported_pt_extensions)
 
 def process_categories(categories: str) -> List[str]:
     return [category.strip() for category in categories.split(',')]
@@ -140,7 +140,12 @@ class Yoloworld_ESAM_Zho:
         YOLO_WORLD_MODEL.set_classes(categories)
         results = YOLO_WORLD_MODEL.predict([np.clip(255. * img.cpu().numpy().squeeze(), 0, 255).astype(np.uint8) for img in image], conf=confidence_threshold, iou=iou_threshold)
         for result in results:
-            masks = [ inference_with_box(box.xyxy.cpu().numpy() if isinstance(box.xyxy, torch.Tensor) else np.copy(box.xyxy)) for box in result.boxes]
+            masks = [ inference_with_box(
+                image  = result.orig_img,
+                box    = box.xyxy.cpu().numpy() if isinstance(box.xyxy, torch.Tensor) else np.copy(box.xyxy),
+                model  = esam_model,
+                device = DEVICE,
+            ) for box in result.boxes]
             if mask_combined:
                 combined_mask = np.zeros(result.orig_img.shape[:2], dtype=np.uint8)
                 det_mask = masks
