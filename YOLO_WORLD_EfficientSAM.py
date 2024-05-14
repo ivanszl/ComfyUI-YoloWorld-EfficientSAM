@@ -1,56 +1,58 @@
 from typing import List
 import folder_paths
 import os
-import cv2
 import numpy as np
-import supervision as sv
+# import supervision as sv
 import torch
-from tqdm import tqdm
-from inference.models import YOLOWorld
+from ultralytics import YOLOWorld
 
-from .utils.efficient_sam import load, inference_with_boxes
-from .utils.video import generate_file_name, calculate_end_frame_index, create_directory
+from .utils.efficient_sam import inference_with_box
 
 current_directory = os.path.dirname(os.path.abspath(__file__))
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-BOUNDING_BOX_ANNOTATOR = sv.BoundingBoxAnnotator()
-MASK_ANNOTATOR = sv.MaskAnnotator()
-LABEL_ANNOTATOR = sv.LabelAnnotator()
+# BOUNDING_BOX_ANNOTATOR = sv.BoundingBoxAnnotator()
+# MASK_ANNOTATOR = sv.MaskAnnotator()
+# LABEL_ANNOTATOR = sv.LabelAnnotator()
 
-folder_paths.folder_names_and_paths["yolo_world"] = ([os.path.join(folder_paths.models_dir, "yolo_world")], folder_paths.supported_pt_extensions)
+folder_paths.folder_names_and_paths["yolo_world"] = ([os.path.join(folder_paths.models_dir, "ultralytics", "yolo_world")], folder_paths.supported_pt_extensions)
 
 def process_categories(categories: str) -> List[str]:
     return [category.strip() for category in categories.split(',')]
 
-def annotate_image(
-    input_image: np.ndarray,
-    detections: sv.Detections,
-    categories: List[str],
-    with_confidence: bool = False,
-    thickness: int = 2,
-    text_thickness: int = 2,
-    text_scale: float = 1.0,
-) -> np.ndarray:
-    labels = [
-        (
-            f"{categories[class_id]}: {confidence:.3f}"
-            if with_confidence
-            else f"{categories[class_id]}"
-        )
-        for class_id, confidence in
-        zip(detections.class_id, detections.confidence)
-    ]
-    BOUNDING_BOX_ANNOTATOR = sv.BoundingBoxAnnotator(thickness=thickness)
-    LABEL_ANNOTATOR = sv.LabelAnnotator(text_thickness=text_thickness, text_scale=text_scale)
-    output_image = MASK_ANNOTATOR.annotate(input_image, detections)
-    output_image = BOUNDING_BOX_ANNOTATOR.annotate(output_image, detections)
-    output_image = LABEL_ANNOTATOR.annotate(output_image, detections, labels=labels)
-    return output_image
+# def annotate_image(
+#     input_image: np.ndarray,
+#     detections: sv.Detections,
+#     categories: List[str],
+#     with_confidence: bool = False,
+#     thickness: int = 2,
+#     text_thickness: int = 2,
+#     text_scale: float = 1.0,
+# ) -> np.ndarray:
+#     labels = [
+#         (
+#             f"{categories[class_id]}: {confidence:.3f}"
+#             if with_confidence
+#             else f"{categories[class_id]}"
+#         )
+#         for class_id, confidence in
+#         zip(detections.class_id, detections.confidence)
+#     ]
+#     BOUNDING_BOX_ANNOTATOR = sv.BoundingBoxAnnotator(thickness=thickness)
+#     LABEL_ANNOTATOR = sv.LabelAnnotator(text_thickness=text_thickness, text_scale=text_scale)
+#     output_image = MASK_ANNOTATOR.annotate(input_image, detections)
+#     output_image = BOUNDING_BOX_ANNOTATOR.annotate(output_image, detections)
+#     output_image = LABEL_ANNOTATOR.annotate(output_image, detections, labels=labels)
+#     return output_image
 
 
 class Yoloworld_ModelLoader_Zho:
     def __init__(self):
+        self.models = {
+            'yolo_world/l': 'yolov8l-world.pt',
+            'yolo_world/m': 'yolov8s-world.pt',
+            'yolo_world/s': 'yolov8s-world.pt',
+        }
         pass
 
     @classmethod
@@ -67,7 +69,8 @@ class Yoloworld_ModelLoader_Zho:
     CATEGORY = "🔎YOLOWORLD_ESAM"
   
     def load_yolo_world_model(self, yolo_world_model):
-        YOLO_WORLD_MODEL = YOLOWorld(model_id=yolo_world_model)
+        
+        YOLO_WORLD_MODEL = YOLOWorld(folder_paths.get_full_path('yolo_world', self.models[yolo_world_model]))
 
         return [YOLO_WORLD_MODEL]
         
@@ -133,60 +136,35 @@ class Yoloworld_ESAM_Zho:
         categories = process_categories(categories)
         processed_images = []
         processed_masks = []
-        for img in image:
-            img = np.clip(255. * img.cpu().numpy().squeeze(), 0, 255).astype(np.uint8)          
-            YOLO_WORLD_MODEL = yolo_world_model
-            YOLO_WORLD_MODEL.set_classes(categories)
-            results = YOLO_WORLD_MODEL.infer(img, confidence=confidence_threshold)
-            detections = sv.Detections.from_inference(results)
-            detections = detections.with_nms(
-                class_agnostic=with_class_agnostic_nms,
-                threshold=iou_threshold
-            )
+        YOLO_WORLD_MODEL = yolo_world_model
+        YOLO_WORLD_MODEL.set_classes(categories)
+        results = YOLO_WORLD_MODEL.predict([np.clip(255. * img.cpu().numpy().squeeze(), 0, 255).astype(np.uint8) for img in image], conf=confidence_threshold, iou=iou_threshold)
+        for result in results:
+            masks = [ inference_with_box(box.xyxy.cpu().numpy() if isinstance(box.xyxy, torch.Tensor) else np.copy(box.xyxy)) for box in result.boxes]
+            if mask_combined:
+                combined_mask = np.zeros(result.orig_img.shape[:2], dtype=np.uint8)
+                det_mask = masks
+                for mask in det_mask:
+                    combined_mask = np.logical_or(combined_mask, mask).astype(np.uint8)
+                masks_tensor = torch.tensor(combined_mask, dtype=torch.float32)
+                processed_masks.append(masks_tensor) 
+            else:
+                det_mask = masks
 
-            combined_mask = None
-            if with_segmentation:
-                detections.mask = inference_with_boxes(
-                    image=img,
-                    xyxy=detections.xyxy,
-                    model=esam_model,
-                    device=DEVICE
-                )
-                if mask_combined:
-                    combined_mask = np.zeros(img.shape[:2], dtype=np.uint8)
-                    det_mask = detections.mask
-                    for mask in det_mask:
-                        combined_mask = np.logical_or(combined_mask, mask).astype(np.uint8)
-                    masks_tensor = torch.tensor(combined_mask, dtype=torch.float32)
-                    processed_masks.append(masks_tensor) 
+                if mask_extracted:
+                    mask_index = mask_extracted_index
+                    selected_mask = det_mask[mask_index]
+                    masks_tensor = torch.tensor(selected_mask, dtype=torch.float32)
                 else:
-                    det_mask = detections.mask
-                    
-                    if mask_extracted:
-                        mask_index = mask_extracted_index
-                        selected_mask = det_mask[mask_index]
-                        masks_tensor = torch.tensor(selected_mask, dtype=torch.float32)
-                    else:
-                        masks_tensor = torch.tensor(det_mask, dtype=torch.float32)
+                    masks_tensor = torch.tensor(det_mask, dtype=torch.float32)
                         
-                    processed_masks.append(masks_tensor)  
-                
-            output_image = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                processed_masks.append(masks_tensor)
+
+            result.update(masks=torch.tensor(masks, dtype=torch.float32))
+            annotate_image = result.plot(line_width=box_thickness, font_size=text_scale)
+            annotate_image = torch.from_numpy(annotate_image.astype(np.float32) / 255.0).unsqueeze(0)
             
-            output_image = annotate_image(
-                input_image=output_image,
-                detections=detections,
-                categories=categories,
-                with_confidence=with_confidence,
-                thickness=box_thickness,
-                text_thickness=text_thickness,
-                text_scale=text_scale,
-            )
-            
-            output_image = cv2.cvtColor(output_image, cv2.COLOR_BGR2RGB)
-            output_image = torch.from_numpy(output_image.astype(np.float32) / 255.0).unsqueeze(0)
-            
-            processed_images.append(output_image)
+            processed_images.append(annotate_image)
 
         new_ims = torch.cat(processed_images, dim=0)
         
